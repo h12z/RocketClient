@@ -1,9 +1,14 @@
+use dotenv::dotenv;
 use crate::minecraft_server::{write_unsigned_short, write_var_int, MinecraftServer, Packet};
 
 mod minecraft_server;
 mod auth;
 
 fn main() {
+
+    dotenv().ok();
+    auth::CLIENT_SECRET = dotenv::var("CLIENT_SECRET").expect("CLIENT_SECRET must be set");
+
     let mut minecraft_server = MinecraftServer::new("192.168.178.135:25565".parse().unwrap());
 
     let mut handshake_request_buffer = Vec::new();

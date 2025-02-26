@@ -1,9 +1,10 @@
+use std::string::ToString;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-const CLIENT_ID: &str = "YOUR_CLIENT_ID";
-const CLIENT_SECRET: &str = "YOUR_CLIENT_SECRET";
+const CLIENT_ID: &str = "9c578555-8b03-4448-9ba6-d033496a4212";
+pub const CLIENT_SECRET: String = "".to_string();
 const REDIRECT_URI: &str = "http://localhost:8080";
 const TOKEN_FILE: &str = "token.json";
 
