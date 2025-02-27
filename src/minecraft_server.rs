@@ -1,15 +1,15 @@
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
 use aes::Aes128;
 use cfb8::cipher::{AsyncStreamCipher, KeyIvInit};
+use flate2::read::GzDecoder;
 use flate2::Compression;
-use flate2::read::{GzDecoder, ZlibEncoder};
 use num_bigint::BigInt;
 use num_traits::Signed;
 use rand::RngCore;
 use reqwest::Client;
 use serde::Serialize;
 use sha1::{Digest, Sha1};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 
 type AesCfb8Enc = cfb8::Encryptor<Aes128>;
 type AesCfb8Dec = cfb8::Decryptor<Aes128>;
@@ -93,9 +93,9 @@ impl MinecraftServer {
         if(self.compress_threshold > 0 && dataBuffer.len() >= self.compress_threshold as usize) {
             let mut preCompressedBuffer = Vec::new();
             write_var_int(&mut preCompressedBuffer, dataBuffer.len() as i32);
-            let mut compressor = ZlibEncoder::new(Vec::new(), Compression::default());
+            let mut compressor = flate2::write::ZlibEncoder::new(Vec::new(), Compression::default());
             compressor.write_all(&dataBuffer).unwrap();
-            preCompressedBuffer.extend_from_slice(compressor.into_inner().as_slice());
+            preCompressedBuffer.extend_from_slice(compressor.finish().unwrap().as_slice());
             write_var_int(&mut buffer, preCompressedBuffer.len() as i32);
             if(self.encrypted) {
                 self.encrypt(preCompressedBuffer.as_mut());
@@ -154,10 +154,10 @@ impl MinecraftServer {
     }
 
     pub fn encrypt(&mut self, data: &mut Vec<u8>) {
-        AesCfb8Enc::new_from_slices(self.encryption_key.as_slice(), self.encryption_key.as_slice()).unwrap().encrypt(data.as_slice().as_mut());
+        AesCfb8Enc::new_from_slices(self.encryption_key.as_slice(), self.encryption_key.as_slice()).unwrap().encrypt(data);
     }
     pub fn decrypt(&mut self, data: &mut Vec<u8>) {
-        AesCfb8Dec::new_from_slices(self.encryption_key.as_slice(), self.encryption_key.as_slice()).unwrap().decrypt(data.as_slice().as_mut());
+        AesCfb8Dec::new_from_slices(self.encryption_key.as_slice(), self.encryption_key.as_slice()).unwrap().decrypt(data);
     }
 
     async fn join_minecraft_server(auth_token: &str, uuid: &str, server_hash: &str) -> Result<(), reqwest::Error> {

@@ -1,12 +1,54 @@
 use std::string::ToString;
-use reqwest::Client;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use warp::{Error, Filter};
 
 const CLIENT_ID: &str = "9c578555-8b03-4448-9ba6-d033496a4212";
-pub const CLIENT_SECRET: String = "".to_string();
 const REDIRECT_URI: &str = "http://localhost:8080";
 const TOKEN_FILE: &str = "token.json";
+
+pub async fn start_server() -> Result<String, Error>   {
+
+    let token_storage = Arc::new(Mutex::new(None));
+    let token_storage_clone = Arc::clone(&token_storage);
+
+    let server = warp::path::end()
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .map(move |params: std::collections::HashMap<String, String>| {
+            if let Some(code) = params.get("code") {
+                let code = code.clone();
+                let token_storage = Arc::clone(&token_storage_clone);
+                tokio::spawn(async move {
+                    if let Ok(auth_response) = get_microsoft_token(CLIENT_ID, dotenv::var("CLIENT_SECRET").unwrap().as_str(), REDIRECT_URI, &*code).await {
+                        *token_storage.lock().unwrap() = Some(auth_response.refresh_token.clone());
+                        save_refresh_token(&auth_response.refresh_token);
+                        println!("Authenticated! Refresh token saved.");
+                    }
+                });
+                "Authentication successful! You can close this tab."
+            } else {
+                "Error: No auth code received."
+            }
+        });
+
+    let (_addr, server) = warp::serve(server).bind_with_graceful_shutdown(([127, 0, 0, 1], 8080), async {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+
+    Ok(refresh_microsoft_token(CLIENT_ID, dotenv::var("CLIENT_SECRET").unwrap().as_str(), load_refresh_token().await.unwrap().as_str()).await.unwrap())
+
+}
+
+pub fn open_browser() {
+    let auth_url = format!(
+        "https://login.live.com/oauth20_authorize.srf?client_id={}&response_type=code&redirect_uri={}&scope=XboxLive.signin%20offline_access",
+        CLIENT_ID, REDIRECT_URI
+    );
+    open::that(auth_url).expect("Failed to open browser");
+}
 
 #[derive(Deserialize)]
 struct AuthResponse {
@@ -15,7 +57,7 @@ struct AuthResponse {
     expires_in: u64,
 }
 
-async fn get_microsoft_token(client_id: &str, client_secret: &str, redirect_uri: &str, auth_code: &str) -> Result<AuthResponse, reqwest::Error> {
+pub async fn get_microsoft_token(client_id: &str, client_secret: &str, redirect_uri: &str, auth_code: &str) -> Result<AuthResponse, reqwest::Error> {
     let client = Client::new();
 
     let params = [
@@ -36,7 +78,7 @@ async fn get_microsoft_token(client_id: &str, client_secret: &str, redirect_uri:
     Ok(response)
 }
 
-async fn refresh_microsoft_token(client_id: &str, client_secret: &str, refresh_token: &str) -> Result<AuthResponse, reqwest::Error> {
+pub async fn refresh_microsoft_token(client_id: &str, client_secret: &str, refresh_token: &str) -> Result<String, reqwest::Error> {
     let client = Client::new();
 
     let params = [
@@ -51,67 +93,98 @@ async fn refresh_microsoft_token(client_id: &str, client_secret: &str, refresh_t
         .send()
         .await?
         .json::<AuthResponse>()
-        .await?;
+        .await?
+        .access_token;
 
     Ok(response)
 }
 
-fn save_refresh_token(refresh_token: &str) {
+pub fn save_refresh_token(refresh_token: &str) {
     let _ = fs::write(TOKEN_FILE, refresh_token);
 }
 
-fn load_refresh_token() -> Option<String> {
-    fs::read_to_string(TOKEN_FILE).ok()
-}
-
-fn open_browser() {
-    let auth_url = format!(
-        "https://login.live.com/oauth20_authorize.srf?client_id={}&response_type=code&redirect_uri={}&scope=XboxLive.signin%20offline_access",
-        CLIENT_ID, REDIRECT_URI
-    );
-    open::that(auth_url).expect("Failed to open browser");
+pub async fn load_refresh_token() -> Option<String> {
+    fs::read_to_string(TOKEN_FILE).await.ok()
 }
 
 #[derive(Serialize)]
 struct XboxAuthRequest {
-    properties: XboxProperties,
-    relying_party: String,
-    token_type: String,
+    Properties: XboxProperties,
+    RelyingParty: String,
+    TokenType: String,
 }
 
 #[derive(Serialize)]
 struct XboxProperties {
-    auth_method: String,
-    site_name: String,
-    rps_ticket: String,
+    AuthMethod: String,
+    SiteName: String,
+    RpsTicket: String,
 }
 
 #[derive(Deserialize)]
-struct XboxAuthResponse {
-    token: String,
+pub struct XboxAuthResponse {
+    pub Token: String,
 }
 
-async fn authenticate_xbox(access_token: &str) -> Result<String, reqwest::Error> {
+pub async fn authenticate_xbox(access_token: &str) -> Result<XboxAuthResponse, reqwest::Error> {
     let client = Client::new();
 
     let auth_request = XboxAuthRequest {
-        properties: XboxProperties {
-            auth_method: "RPS".to_string(),
-            site_name: "user.auth.xboxlive.com".to_string(),
-            rps_ticket: format!("d={}", access_token),
+        Properties: XboxProperties {
+            AuthMethod: "RPS".to_string(),
+            SiteName: "user.auth.xboxlive.com".to_string(),
+            RpsTicket: format!("d={}", access_token),
         },
-        relying_party: "http://auth.xboxlive.com".to_string(),
-        token_type: "JWT".to_string(),
+        RelyingParty: "http://auth.xboxlive.com".to_string(),
+        TokenType: "JWT".to_string(),
+    };
+
+    client.post("https://user.auth.xboxlive.com/user/authenticate")
+        .json(&auth_request)
+        .send()
+        .await?
+        .json::<XboxAuthResponse>()
+        .await
+}
+
+#[derive(Serialize)]
+struct XSTSRequest {
+    Properties: Properties,
+    RelyingParty: String,
+    TokenType: String,
+}
+
+#[derive(Serialize)]
+struct Properties {
+    SandboxId: String,
+    UserTokens: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct XSTSResponse {
+    Token: String,
+}
+
+pub async fn authenticate_xsts(xbox_token: &str) -> Result<String, reqwest::Error> {
+    let client = Client::new();
+
+    let auth_request = XSTSRequest {
+        Properties: Properties {
+            SandboxId: "RETAIL".to_string(),
+            UserTokens: Vec::from([xbox_token.to_string()]),
+        },
+        RelyingParty: "rp://api.minecraftservices.com/".to_string(),
+        TokenType: "JWT".to_string(),
     };
 
     let response = client.post("https://user.auth.xboxlive.com/user/authenticate")
         .json(&auth_request)
         .send()
         .await?
-        .json::<XboxAuthResponse>()
+        .json::<XSTSResponse>()
         .await?;
 
-    Ok(response.token)
+    Ok(response.Token)
 }
 
 #[derive(Serialize)]
@@ -124,7 +197,7 @@ struct MinecraftAuthResponse {
     access_token: String,
 }
 
-async fn authenticate_minecraft(xbox_token: &str) -> Result<String, reqwest::Error> {
+pub async fn authenticate_minecraft(xbox_token: &str) -> Result<String, reqwest::Error> {
     let client = Client::new();
 
     let auth_request = MinecraftAuthRequest {
@@ -139,4 +212,23 @@ async fn authenticate_minecraft(xbox_token: &str) -> Result<String, reqwest::Err
         .await?;
 
     Ok(response.access_token)
+}
+
+#[derive(Deserialize)]
+pub struct MinecraftProfileResponse {
+    pub id: String,
+    pub name: String,
+}
+
+pub async fn get_profile(auth_token: &str) -> Result<MinecraftProfileResponse, reqwest::Error> {
+    let client = Client::new();
+
+    let response = client.get("https://api.minecraftservices.com/minecraft/profile")
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .send()
+        .await?
+        .json::<MinecraftProfileResponse>()
+        .await?;
+
+    Ok(response)
 }
