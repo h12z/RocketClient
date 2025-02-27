@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
     auth::open_browser();
-    let auth_token = auth::start_server().await?;
+    let auth_token = auth::start_server().await.to_string();
     let xbox_token = auth::authenticate_xbox(auth_token.as_str()).await?.Token;
     let xsts_token = auth::authenticate_xsts(xbox_token.as_str()).await?;
     let minecraft_token = auth::authenticate_minecraft(xsts_token.as_str()).await?;

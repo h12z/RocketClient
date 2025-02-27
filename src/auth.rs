@@ -4,16 +4,19 @@ use std::time::Duration;
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use tokio::sync::oneshot;
 use warp::{Error, Filter};
 
 const CLIENT_ID: &str = "9c578555-8b03-4448-9ba6-d033496a4212";
 const REDIRECT_URI: &str = "http://localhost:8080";
 const TOKEN_FILE: &str = "token.json";
 
-pub async fn start_server() -> Result<String, Error>   {
+pub async fn start_server() -> String {
 
     let token_storage = Arc::new(Mutex::new(None));
     let token_storage_clone = Arc::clone(&token_storage);
+
+    let (tx, rx) = oneshot::channel();
 
     let server = warp::path::end()
         .and(warp::query::<std::collections::HashMap<String, String>>())
@@ -23,9 +26,12 @@ pub async fn start_server() -> Result<String, Error>   {
                 let token_storage = Arc::clone(&token_storage_clone);
                 tokio::spawn(async move {
                     if let Ok(auth_response) = get_microsoft_token(CLIENT_ID, dotenv::var("CLIENT_SECRET").unwrap().as_str(), REDIRECT_URI, &*code).await {
+                        let access_token = auth_response.access_token;
                         *token_storage.lock().unwrap() = Some(auth_response.refresh_token.clone());
                         save_refresh_token(&auth_response.refresh_token);
                         println!("Authenticated! Refresh token saved.");
+
+                        let _ = tx.send(access_token);
                     }
                 });
                 "Authentication successful! You can close this tab."
@@ -35,10 +41,12 @@ pub async fn start_server() -> Result<String, Error>   {
         });
 
     let (_addr, server) = warp::serve(server).bind_with_graceful_shutdown(([127, 0, 0, 1], 8080), async {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        
     });
 
-    Ok(refresh_microsoft_token(CLIENT_ID, dotenv::var("CLIENT_SECRET").unwrap().as_str(), load_refresh_token().await.unwrap().as_str()).await.unwrap())
+    server.await;
+
+    rx.await.unwrap()
 
 }
 
